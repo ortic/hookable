@@ -5,6 +5,8 @@ namespace Sofa\Hookable;
 use Closure;
 use InvalidArgumentException;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
+use Illuminate\Database\Query\Builder as QueryBuilder;
+use ReflectionClass;
 
 /**
  * @method $this leftJoin($table, $one, $operator, $two)
@@ -34,6 +36,44 @@ class Builder extends EloquentBuilder
         'toSql', 'lists', 'insert', 'insertGetId', 'pluck', 'value', 'count', 'raw', 'min', 'max',
         'avg', 'sum', 'exists', 'doesntExist', 'getBindings', 'aggregate', 'getConnection'
     ];
+
+    /**
+     * Create a new Eloquent query builder instance.
+     *
+     * @param  \Illuminate\Database\Query\Builder $query
+     */
+    public function __construct(QueryBuilder $query)
+    {
+        parent::__construct($query);
+
+        $this->passthru = $this->passthruMethods();
+    }
+
+    /**
+     * The methods passed through to the base query builder, for any Laravel version.
+     *
+     * Our $passthru replaces Eloquent's. Laravel 9 and earlier look the called method up as written,
+     * Laravel 10 and later look up its lower-cased name in a lower-case list, so with only the camel-case
+     * names insertGetId() (every insert of a new model), toSql() or getBindings() returned the builder.
+     * Hence both spellings, plus Eloquent's own list (insertOrIgnore, toRawSql, dd, ... on newer versions).
+     *
+     * @return array
+     */
+    protected function passthruMethods()
+    {
+        static $eloquent;
+
+        if ($eloquent === null) {
+            $defaults = (new ReflectionClass(EloquentBuilder::class))->getDefaultProperties();
+            $eloquent = isset($defaults['passthru']) ? $defaults['passthru'] : [];
+        }
+
+        return array_values(array_unique(array_merge(
+            $eloquent,
+            $this->passthru,
+            array_map('strtolower', $this->passthru)
+        )));
+    }
 
     /*
     |--------------------------------------------------------------------------
@@ -124,7 +164,9 @@ class Builder extends EloquentBuilder
      */
     public function where($column, $operator = null, $value = null, $boolean = 'and')
     {
-        if (!$column instanceof Closure && !in_array(strtolower($operator), $this->operators, true)) {
+        // where('column', $value): anything but an operator string is the value, an Expression too (strtolower()
+        // refuses objects since PHP 8)
+        if (!$column instanceof Closure && !(is_string($operator) && in_array(strtolower($operator), $this->operators, true))) {
             list($value, $operator) = [$operator, '='];
         }
 
